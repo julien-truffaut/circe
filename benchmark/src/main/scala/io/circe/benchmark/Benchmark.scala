@@ -16,8 +16,8 @@ case class Foo(s: String, d: Double, i: Int, l: Long, bs: List[Boolean])
 object Foo {
   implicit val codecFoo: CodecJson[Foo] = CodecJson.derive[Foo]
   implicit val playFormatFoo: Format[Foo] = JsonP.format[Foo]
-  implicit val decodeFoo: Decoder[Foo] = deriveFor[Foo].decoder
-  implicit val encodeFoo: Encoder[Foo] = deriveFor[Foo].encoder
+  implicit val decodeFoo: Decoder[Foo] = deriveDecoder
+  implicit val encodeFoo: Encoder[Foo] = deriveEncoder
   implicit val sprayFormatFoo: JsonFormat[Foo] = jsonFormat5(Foo.apply)
 
   implicit val eqFoo: Eq[Foo] = Eq.fromUniversalEquals[Foo]

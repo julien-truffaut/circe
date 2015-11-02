@@ -2,7 +2,7 @@ package io.circe.generic
 
 import export.reexports
 import io.circe.{ Decoder, Encoder }
-import io.circe.generic.decoding.DerivedDecoder
+import io.circe.generic.decoding.{ DerivedDecoder, DerivedDecoderWithDefaults }
 import io.circe.generic.encoding.DerivedObjectEncoder
 
 /**
@@ -26,4 +26,7 @@ object auto {
   implicit def encodeObject1: Encoder[Object] = sys.error("No Encoder[Object]")
   implicit def encodeAnyRef0: Encoder[AnyRef] = sys.error("No Encoder[AnyRef]")
   implicit def encodeAnyRef1: Encoder[AnyRef] = sys.error("No Encoder[AnyRef]")
+
+  @reexports[DerivedDecoderWithDefaults, DerivedObjectEncoder]
+  object defaults
 }
