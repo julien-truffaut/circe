@@ -13,6 +13,9 @@ trait Decoder[A] extends Serializable { self =>
    */
   def apply(c: HCursor): Decoder.Result[A]
 
+  def decodeAccumulating(c: HCursor): AccumulatingDecoder.Result[A] =
+    apply(c).toValidated.toValidatedNel
+
   /**
    * Decode the given acursor.
    */
@@ -22,10 +25,20 @@ trait Decoder[A] extends Serializable { self =>
     apply
   )
 
+  def tryDecodeAccumulating(c: ACursor): AccumulatingDecoder.Result[A] = c.either.fold(
+    invalid =>
+      Validated.invalidNel(
+        DecodingFailure("Attempt to decode value on failed cursor", invalid.history)
+      ),
+    decodeAccumulating
+  )
+
   /**
    * Decode the given [[Json]] value.
    */
   def decodeJson(j: Json): Decoder.Result[A] = apply(j.cursor.hcursor)
+
+  final def accumulating: AccumulatingDecoder[A] = AccumulatingDecoder.fromDecoder(self)
 
   /**
    * Map a function over this [[Decoder]].
@@ -33,6 +46,19 @@ trait Decoder[A] extends Serializable { self =>
   def map[B](f: A => B): Decoder[B] = new Decoder[B] {
     def apply(c: HCursor): Decoder.Result[B] = self(c).map(f)
     override def tryDecode(c: ACursor): Decoder.Result[B] = self.tryDecode(c).map(f)
+    override def decodeAccumulating(c: HCursor): AccumulatingDecoder.Result[B] =
+      self.decodeAccumulating(c).map(f)
+  }
+
+  def ap[B](f: Decoder[A => B]): Decoder[B] = new Decoder[B] {
+    def apply(c: HCursor): Decoder.Result[B] = self(c).flatMap(a => f(c).map(_(a)))
+    override def tryDecode(c: ACursor): Decoder.Result[B] =
+      self.tryDecode(c).flatMap(a => f.tryDecode(c).map(_(a)))
+
+    override def decodeAccumulating(c: HCursor): AccumulatingDecoder.Result[B] =
+      self.decodeAccumulating(c).ap(f.decodeAccumulating(c))(
+        Decoder.nonEmptyListDecodingFailureSemigroup
+      )
   }
 
   /**
@@ -114,6 +140,12 @@ trait Decoder[A] extends Serializable { self =>
       a <- this(a1)
       b <- x(a2)
     } yield (a, b)
+
+  def before(f: HCursor => ACursor): Decoder[A] = new Decoder[A] {
+    def apply(c: HCursor): Decoder.Result[A] = self.tryDecode(f(c))
+    override def decodeAccumulating(c: HCursor): AccumulatingDecoder.Result[A] =
+      self.tryDecodeAccumulating(f(c))
+  }
 }
 
 /**
@@ -371,18 +403,34 @@ object Decoder extends TupleDecoders with LowPriorityDecoders {
   implicit def decodeCanBuildFrom[A, C[_]](implicit
     d: Decoder[A],
     cbf: CanBuildFrom[Nothing, A, C[A]]
-  ): Decoder[C[A]] = instance { c =>
-    c.downArray.success.fold(
-      if (c.focus.isArray)
-        Xor.right(cbf.apply.result)
-      else
-        Xor.left(DecodingFailure("CanBuildFrom for A", c.history))
-    )(
-      _.traverseDecode(cbf.apply)(
-        _.right,
-        (acc, hcursor) => hcursor.as[A].map(acc += _)
-      ).map(_.result)
-    )
+  ): Decoder[C[A]] = new Decoder[C[A]] {
+    def apply(c: HCursor): Decoder.Result[C[A]] =
+      c.downArray.success.fold(
+        if (c.focus.isArray)
+          Xor.right(cbf.apply.result)
+        else
+          Xor.left(DecodingFailure("CanBuildFrom for A", c.history))
+      )(
+        _.traverseDecode(cbf.apply)(
+          _.right,
+          (acc, hcursor) => hcursor.as[A].map(acc += _)
+        ).map(_.result)
+      )
+
+    override def decodeAccumulating(c: HCursor): AccumulatingDecoder.Result[C[A]] =
+      c.downArray.success.fold(
+        if (c.focus.isArray)
+          Validated.valid(cbf.apply.result)
+        else
+          Validated.invalidNel(DecodingFailure("CanBuildFrom for A", c.history))
+      )(
+        _.traverseDecodeAccumulating(Validated.valid(cbf.apply))(
+          _.right,
+          (acc, hcursor) => d.decodeAccumulating(hcursor).ap(
+            acc.map(builder => (a: A) => builder += a)
+          )(Decoder.nonEmptyListDecodingFailureSemigroup)
+        ).map(_.result)
+      )
   }
 
   /**
@@ -493,8 +541,15 @@ object Decoder extends TupleDecoders with LowPriorityDecoders {
    */
   implicit val monadDecode: Monad[Decoder] = new Monad[Decoder] {
     def pure[A](a: A): Decoder[A] = instance(_ => Xor.right(a))
+    override def map[A, B](fa: Decoder[A])(f: A => B): Decoder[B] = fa.map(f)
+    override def ap[A, B](fa: Decoder[A])(f: Decoder[A => B]): Decoder[B] = fa.ap(f)
     def flatMap[A, B](fa: Decoder[A])(f: A => Decoder[B]): Decoder[B] = fa.flatMap(f)
   }
+
+  import cats.{ Semigroup, SemigroupK }
+
+  private[circe] val nonEmptyListDecodingFailureSemigroup: Semigroup[NonEmptyList[DecodingFailure]] =
+    SemigroupK[NonEmptyList].algebra
 }
 
 @export.imports[Decoder] private[circe] trait LowPriorityDecoders
